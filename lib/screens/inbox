@@ -1,0 +1,161 @@
+import 'package:flutter/material.dart';
+import 'package:tiktok_clone/main.dart'; // เพื่อเข้าถึง supabase client
+
+class InboxScreen extends StatefulWidget {
+  const InboxScreen({super.key});
+
+  @override
+  State<InboxScreen> createState() => _InboxScreenState();
+}
+
+class _InboxScreenState extends State<InboxScreen> with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+  late Future<List<Map<String, dynamic>>> _notificationsFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this); // 2 Tabs: Messages, Activity
+    _notificationsFuture = _fetchNotifications(); // เริ่มดึงการแจ้งเตือน
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  // ฟังก์ชันสำหรับดึงการแจ้งเตือนของผู้ใช้ปัจจุบัน
+  Future<List<Map<String, dynamic>>> _fetchNotifications() async {
+    final currentUser = supabase.auth.currentUser;
+    if (currentUser == null) {
+      return [];
+    }
+    try {
+      final response = await supabase
+          .from('notifications')
+          .select('*, sender_profile:sender_id(username, avatar_url)') // ดึงข้อมูลโปรไฟล์ของผู้ส่งด้วย
+          .eq('recipient_id', currentUser.id)
+          .order('created_at', ascending: false); // เรียงตามเวลาล่าสุด
+
+      return response as List<Map<String, dynamic>>;
+    } catch (e) {
+      debugPrint('Error fetching notifications: $e');
+      return [];
+    }
+  }
+
+  // ฟังก์ชันสำหรับทำเครื่องหมายการแจ้งเตือนว่าอ่านแล้ว
+  Future<void> _markNotificationAsRead(String notificationId) async {
+    try {
+      await supabase
+          .from('notifications')
+          .update({'is_read': true})
+          .eq('id', notificationId);
+      // รีเฟรชรายการแจ้งเตือนหลังจากทำเครื่องหมายว่าอ่านแล้ว
+      setState(() {
+        _notificationsFuture = _fetchNotifications();
+      });
+    } catch (e) {
+      debugPrint('Error marking notification as read: $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: TabBar(
+          controller: _tabController,
+          tabs: const [
+            Tab(text: 'ข้อความ'),
+            Tab(text: 'กิจกรรม'),
+          ],
+          labelColor: Colors.white,
+          unselectedLabelColor: Colors.grey,
+          indicatorColor: Theme.of(context).colorScheme.secondary, // สีแดงชมพู
+          indicatorSize: TabBarIndicatorSize.label, // ขนาดของเส้นใต้ Tab
+        ),
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          // Tab 1: ข้อความ (Messages)
+          const Center(
+            child: Text(
+              'หน้าจอข้อความส่วนตัว (กำลังพัฒนา)',
+              style: TextStyle(fontSize: 20, color: Colors.white),
+            ),
+          ),
+          // Tab 2: กิจกรรม (Activity/Notifications)
+          FutureBuilder<List<Map<String, dynamic>>>(
+            future: _notificationsFuture,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              if (snapshot.hasError) {
+                debugPrint('Error loading notifications: ${snapshot.error}');
+                return Center(child: Text('ข้อผิดพลาดในการโหลดการแจ้งเตือน: ${snapshot.error}'));
+              }
+              final notifications = snapshot.data;
+              if (notifications == null || notifications.isEmpty) {
+                return const Center(child: Text('ยังไม่มีการแจ้งเตือน'));
+              }
+
+              return ListView.builder(
+                itemCount: notifications.length,
+                itemBuilder: (context, index) {
+                  final notification = notifications[index];
+                  final senderProfile = notification['sender_profile'] as Map<String, dynamic>?;
+                  final senderUsername = senderProfile?['username'] as String? ?? 'ไม่ระบุชื่อ';
+                  final senderAvatarUrl = senderProfile?['avatar_url'] as String?;
+                  final notificationContent = notification['content'] as String? ?? 'ไม่มีเนื้อหา';
+                  final isRead = notification['is_read'] as bool? ?? false;
+                  final notificationId = notification['id'] as String;
+
+                  return Card(
+                    color: isRead ? Colors.grey.shade900 : Colors.grey.shade800, // สีต่างกันตามสถานะอ่านแล้ว/ยังไม่อ่าน
+                    margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    child: ListTile(
+                      leading: CircleAvatar(
+                        backgroundColor: Colors.grey.shade700,
+                        backgroundImage: senderAvatarUrl != null && senderAvatarUrl.isNotEmpty
+                            ? NetworkImage(senderAvatarUrl) as ImageProvider<Object>?
+                            : null,
+                        child: (senderAvatarUrl == null || senderAvatarUrl.isEmpty)
+                            ? Text(
+                                senderUsername[0].toUpperCase(),
+                                style: const TextStyle(color: Colors.white),
+                              )
+                            : null,
+                      ),
+                      title: Text(
+                        notificationContent,
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: isRead ? FontWeight.normal : FontWeight.bold, // ตัวหนาถ้ายังไม่อ่าน
+                        ),
+                      ),
+                      subtitle: Text(
+                        'จาก: @$senderUsername',
+                        style: const TextStyle(color: Colors.grey),
+                      ),
+                      trailing: isRead
+                          ? null // ไม่มีไอคอนถ้าอ่านแล้ว
+                          : const Icon(Icons.circle, color: Colors.red, size: 10), // ไอคอนจุดแดงถ้ายังไม่อ่าน
+                      onTap: () {
+                        _markNotificationAsRead(notificationId); // ทำเครื่องหมายว่าอ่านแล้วเมื่อแตะ
+                        // TODO: อาจจะนำทางไปยังวิดีโอหรือโปรไฟล์ที่เกี่ยวข้อง
+                      },
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
